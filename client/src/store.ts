@@ -14,7 +14,8 @@ export const visualOffsetAtom = atomWithStorage<number>('mania2midi_visualOffset
 export const isProcessingAtom = atom<boolean>(false)
 export const processingResultAtom = atom<{ outputDir: string, chunks: string[], timestamp?: number } | null>(null)
 export const lanePresetsAtom = atomWithStorage<Record<string, number[]>>('mania2midi_lanePresets', {
-    '9k-equal': [1, 1, 1, 1, 1, 1, 1, 1, 1],
-    '7k-equal': [1, 1, 1, 1, 1, 1, 1],
-    '4k-equal': [1, 1, 1, 1],
+    'drum mania': [13.874028389875152, 9.6173776064337, 9.841927337024476, 11.111111111111114, 10.552164055698931, 11.938813580400442, 9.949011317000355, 9.949011317000384, 13.166555285455445],
+    '9k': [1, 1, 1, 1, 1, 1, 1, 1, 1],
+    '7k': [1, 1, 1, 1, 1, 1, 1],
+    '4k': [1, 1, 1, 1],
 })

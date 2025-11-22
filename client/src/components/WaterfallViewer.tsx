@@ -25,7 +25,9 @@ export function WaterfallViewer() {
   const [detecting, setDetecting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [threshold, setThreshold] = useState(200);
-  const [minHeight, setMinHeight] = useState(3);
+  const [beatsPerBar, setBeatsPerBar] = useState(4);
+  const [barsPerLine, setBarsPerLine] = useState(4);
+  const [minHeight, setMinHeight] = useState(4);
   const [zoom, setZoom] = useState(50);
   const [editorOpened, setEditorOpened] = useState(false);
   const [metadata, setMetadata] = useState<any>(null);
@@ -38,10 +40,6 @@ export function WaterfallViewer() {
               .catch(err => console.error("Failed to load metadata", err));
       }
   }, [result]);
-  
-  // BPM Config
-  const [beatsPerBar, setBeatsPerBar] = useState(4);
-  const [barsPerLine, setBarsPerLine] = useState(4);
 
   if (!result) return null;
 
