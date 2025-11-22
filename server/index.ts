@@ -178,7 +178,7 @@ app.post('/api/extract-frames', (req, res) => {
 
 // Detect notes
 app.post('/api/process/detect-notes', (req, res) => {
-  const { videoFilename, threshold = 200, laneRatios } = req.body;
+  const { videoFilename, threshold = 200, laneRatios, beatsPerBar, barsPerLine } = req.body;
 
   if (!videoFilename) {
     return res.status(400).json({ error: 'Missing videoFilename' });
@@ -208,6 +208,9 @@ app.post('/api/process/detect-notes', (req, res) => {
   if (laneRatios && Array.isArray(laneRatios)) {
       args.push('--lane-ratios', laneRatios.join(','));
   }
+  
+  if (beatsPerBar) args.push('--beats-per-bar', beatsPerBar.toString());
+  if (barsPerLine) args.push('--bars-per-line', barsPerLine.toString());
 
   const pythonProcess = spawn(pythonExec, args);
 
@@ -336,6 +339,45 @@ app.post('/api/process/export-midi', (req, res) => {
         res.status(500).json({ error: 'Export failed' });
     }
 });
+
+// Save notes
+app.post('/api/process/save-notes', (req, res) => {
+    const { videoFilename, notes, bpm, bar_lines } = req.body;
+
+    if (!videoFilename || !notes) {
+        return res.status(400).json({ error: 'Missing parameters' });
+    }
+
+    const workspaceDir = path.join(__dirname, '../workspace');
+    const outputDir = path.join(workspaceDir, 'output_' + videoFilename);
+    const notesPath = path.join(outputDir, 'notes.json');
+
+    if (!fs.existsSync(outputDir)) {
+        return res.status(404).json({ error: 'Output directory not found.' });
+    }
+
+    try {
+        let outputData: any = { notes };
+        if (bpm) outputData.bpm = bpm;
+        if (bar_lines) outputData.bar_lines = bar_lines;
+        
+        // If we didn't receive bpm/bar_lines, try to read them from existing file
+        if (!bpm || !bar_lines) {
+             if (fs.existsSync(notesPath)) {
+                 const existing = fs.readJsonSync(notesPath);
+                 if (!bpm && existing.bpm) outputData.bpm = existing.bpm;
+                 if (!bar_lines && existing.bar_lines) outputData.bar_lines = existing.bar_lines;
+             }
+        }
+
+        fs.writeJsonSync(notesPath, outputData, { spaces: 2 });
+        res.json({ status: 'completed' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Failed to save notes' });
+    }
+});
+
 
 // Start server
 app.listen(PORT, () => {

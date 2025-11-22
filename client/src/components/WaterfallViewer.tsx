@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useAtom } from 'jotai';
 import { processingResultAtom, videoFilenameAtom, laneRatiosAtom } from '../store';
-import { Image, Paper, Text, Button, Group, Slider, Box, Loader, ActionIcon, Tooltip } from '@mantine/core';
-import { Play } from 'lucide-react';
+import { Image, Paper, Text, Button, Group, Slider, Box, Loader, ActionIcon, Tooltip, NumberInput, Popover } from '@mantine/core';
+import { Play, Settings } from 'lucide-react';
 import { NoteEditor } from './NoteEditor';
 
 interface Note {
@@ -27,6 +27,10 @@ export function WaterfallViewer() {
   const [threshold, setThreshold] = useState(200);
   const [zoom, setZoom] = useState(50);
   const [editorOpened, setEditorOpened] = useState(false);
+  
+  // BPM Config
+  const [beatsPerBar, setBeatsPerBar] = useState(4);
+  const [barsPerLine, setBarsPerLine] = useState(1);
 
   if (!result) return null;
 
@@ -41,7 +45,9 @@ export function WaterfallViewer() {
         body: JSON.stringify({
           videoFilename,
           threshold,
-          laneRatios
+          laneRatios,
+          beatsPerBar,
+          barsPerLine
         })
       });
       const data = await res.json();
@@ -75,10 +81,30 @@ export function WaterfallViewer() {
       return ((laneRatios[laneIdx] || 0) / totalRatio) * 100;
   };
 
+  const handleSave = async () => {
+    if (!videoFilename) return;
+    try {
+        await fetch('/api/process/save-notes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                videoFilename,
+                notes,
+                bpm
+            })
+        });
+    } catch (e) {
+        console.error("Failed to save notes", e);
+    }
+  };
+
   const handleExport = async () => {
     if (!videoFilename || notes.length === 0) return;
     setExporting(true);
     try {
+        // Save first
+        await handleSave();
+
         const res = await fetch('/api/process/export-midi', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -96,6 +122,71 @@ export function WaterfallViewer() {
     } finally {
         setExporting(false);
     }
+  };
+
+  const handleChunkClick = (e: React.MouseEvent<HTMLDivElement>, chunkIndex: number) => {
+      // Prevent default to avoid selecting text etc
+      e.preventDefault();
+      
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      
+      const xPercent = (x / rect.width) * 100;
+      const yPercent = (y / rect.height) * 100;
+      
+      // Determine Lane
+      let currentLeft = 0;
+      let clickedLane = -1;
+      for (let i = 0; i < laneRatios.length; i++) {
+          const w = getLaneWidth(i);
+          if (xPercent >= currentLeft && xPercent < currentLeft + w) {
+              clickedLane = i;
+              break;
+          }
+          currentLeft += w;
+      }
+      
+      if (clickedLane === -1) return;
+      
+      // Try to find chunk height from existing notes in this chunk
+      const existingNoteInChunk = notes.find(n => n.chunk_index === chunkIndex);
+      const chunkHeight = existingNoteInChunk?.chunk_height || 2000;
+
+      // Determine Y in chunk pixels
+      const clickY = (yPercent / 100) * chunkHeight;
+      
+      // Check for existing note to delete
+      // We check if the click is within the vertical bounds of an existing note
+      // plus a small padding for easier clicking on thin notes.
+      const paddingPx = 10; // 10 pixels padding
+      
+      const existingNoteIndex = notes.findIndex(n => {
+          if (n.chunk_index !== chunkIndex || n.lane !== clickedLane) return false;
+          
+          const noteTop = n.y - (n.h / 2);
+          const noteBottom = n.y + (n.h / 2);
+          
+          return clickY >= (noteTop - paddingPx) && clickY <= (noteBottom + paddingPx);
+      });
+      
+      if (existingNoteIndex !== -1) {
+          // Delete
+          const newNotes = [...notes];
+          newNotes.splice(existingNoteIndex, 1);
+          setNotes(newNotes);
+      } else {
+          // Add
+          const newNote: Note = {
+              chunk_index: chunkIndex,
+              chunk_height: chunkHeight,
+              lane: clickedLane,
+              y: clickY,
+              h: 10,
+              type: 'hit'
+          };
+          setNotes([...notes, newNote]);
+      }
   };
 
   return (
@@ -117,6 +208,35 @@ export function WaterfallViewer() {
                 value={threshold} 
                 onChange={setThreshold} 
             />
+            
+            <Popover width={300} position="bottom" withArrow shadow="md">
+                <Popover.Target>
+                    <ActionIcon variant="light" size="lg">
+                        <Settings size={20} />
+                    </ActionIcon>
+                </Popover.Target>
+                <Popover.Dropdown>
+                    <Text size="sm" fw={700} mb="xs">BPM Detection Settings</Text>
+                    <NumberInput
+                        label="Beats per Bar (Time Sig)"
+                        description="Numerator of time signature (e.g. 4 for 4/4)"
+                        value={beatsPerBar}
+                        onChange={(v) => setBeatsPerBar(Number(v))}
+                        min={1}
+                        max={16}
+                        mb="xs"
+                    />
+                    <NumberInput
+                        label="Bars per Line"
+                        description="How many bars does one detected line represent? (Use 4 if lines are sparse)"
+                        value={barsPerLine}
+                        onChange={(v) => setBarsPerLine(Number(v))}
+                        min={1}
+                        max={16}
+                    />
+                </Popover.Dropdown>
+            </Popover>
+
             <Button size="xs" onClick={handleDetect} disabled={detecting}>
                 {detecting ? <Loader size="xs" mr="xs"/> : null}
                 Detect Notes
@@ -136,6 +256,7 @@ export function WaterfallViewer() {
       <Text size="sm" mb="md">
           Chunks: {result.chunks.length} | Notes: {notes.length} 
           {bpm && <span style={{ marginLeft: 20, fontWeight: 'bold', color: 'cyan' }}>Detected BPM: {bpm}</span>}
+          <span style={{ marginLeft: 20, color: 'gray', fontSize: '0.8em' }}>(Click chart to add/remove notes)</span>
       </Text>
       
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
@@ -144,17 +265,21 @@ export function WaterfallViewer() {
           const chunkIndex = parseInt(chunk.split('_')[1]);
           
           return (
-            <Box key={chunk} style={{ position: 'relative', width: `${zoom}%` }}>
+            <Box 
+                key={chunk} 
+                style={{ position: 'relative', width: `${zoom}%`, cursor: 'crosshair' }}
+                onClick={(e) => handleChunkClick(e, chunkIndex)}
+            >
                 <Image
                 src={`/workspace/${result.outputDir}/${chunk}`}
                 alt={chunk}
                 w="100%"
                 fit="contain"
-                style={{ display: 'block' }}
+                style={{ display: 'block', pointerEvents: 'none' }}
                 />
                 {/* Overlay Notes for this chunk */}
                 {notes.filter(n => n.chunk_index === chunkIndex).map((note, i) => {
-                    const chunkH = note.chunk_height || 5000; // Fallback to default chunk size if missing
+                    const chunkH = note.chunk_height || 2000; // Fallback to default chunk size if missing
                     return (
                         <div
                             key={i}

@@ -12,6 +12,8 @@ def main():
     parser.add_argument('--lanes', type=int, default=9, help='Number of lanes')
     parser.add_argument('--lane-ratios', type=str, help='Comma-separated lane width ratios (e.g. "1,1.5,1")')
     parser.add_argument('--threshold', type=int, default=200, help='Brightness threshold (0-255)')
+    parser.add_argument('--beats-per-bar', type=int, default=4, help='Beats per bar (Time Signature Numerator)')
+    parser.add_argument('--bars-per-line', type=int, default=1, help='Number of bars between detected lines')
     
     args = parser.parse_args()
 
@@ -140,9 +142,9 @@ def main():
                 # Calculate Time (Seconds)
                 # Global Y = current_base_y + (height - center_y)
                 # Time = start_time + (Global Y / speed) / fps
+                global_y = current_base_y + (height - center_y)
                 time_sec = 0.0
                 if 'speed' in metadata and 'fps' in metadata and 'start_time' in metadata:
-                    global_y = current_base_y + (height - center_y)
                     time_sec = metadata['start_time'] + (global_y / metadata['speed']) / metadata['fps']
 
                 # Store note
@@ -150,9 +152,11 @@ def main():
                 detected_notes.append({
                     "chunk_index": chunk_idx,
                     "chunk_height": height,
+                    "chunk_base_y": current_base_y,
                     "lane": lane_idx,
                     "y": float(center_y),
                     "h": float(h),
+                    "global_y": float(global_y),
                     "time": float(time_sec),
                     "type": "hit" # Default to hit, logic for hold notes can be added later
                 })
@@ -162,7 +166,7 @@ def main():
 
     # Calculate BPM
     bpm = 0
-    if len(detected_bar_lines_y) > 1 and 'speed' in metadata and 'fps' in metadata:
+    if len(detected_bar_lines_y) > 1:
         detected_bar_lines_y.sort()
         diffs = np.diff(detected_bar_lines_y)
         
@@ -178,18 +182,71 @@ def main():
             avg_diff_px = np.mean(valid_diffs)
             
             # Calculate BPM
-            # avg_diff_px is pixels per bar
-            # speed is pixels per frame
-            # fps is frames per second
+            if 'speed' in metadata and 'fps' in metadata:
+                frames_per_line = avg_diff_px / metadata['speed']
+                seconds_per_line = frames_per_line / metadata['fps']
+                
+                # BPM = Beats Per Minute
+                # beats_per_line = beats_per_bar * bars_per_line
+                beats_per_line = args.beats_per_bar * args.bars_per_line
+                
+                if seconds_per_line > 0:
+                    bpm = (60 / seconds_per_line) * beats_per_line
+                    print(f"Estimated BPM: {bpm:.2f} (Avg Line Height: {avg_diff_px:.1f}px, Beats/Line: {beats_per_line})")
+
+            # --- Quantization Step ---
+            # Snap notes to 1/48 of a measure (covers 1/4, 1/8, 1/12, 1/16, 1/24, 1/32)
+            # We only quantize if we have valid bar lines
+            print("Quantizing notes...")
             
-            frames_per_bar = avg_diff_px / metadata['speed']
-            seconds_per_bar = frames_per_bar / metadata['fps']
+            # If bars_per_line > 1, the "measure" we detected is actually multiple measures.
+            # We need to increase subdivisions to maintain resolution.
+            # Standard: 48 subdivisions per bar.
+            subdivisions = 48 * args.bars_per_line
             
-            # BPM = Beats Per Minute
-            # Assuming 4/4 time signature -> 4 beats per bar
-            if seconds_per_bar > 0:
-                bpm = (60 / seconds_per_bar) * 4
-                print(f"Estimated BPM: {bpm:.2f} (Avg Bar Height: {avg_diff_px:.1f}px)")
+            # We need to handle the case where bar lines might be missing or noisy.
+            # But for now, let's assume detected_bar_lines_y gives us a grid.
+            # We will only snap notes that fall within the range of detected bar lines.
+            
+            # Sort bar lines just in case
+            bars = sorted(detected_bar_lines_y)
+            
+            for note in detected_notes:
+                gy = note['global_y']
+                
+                # Find the measure this note belongs to
+                # We look for the last bar line <= gy
+                # This is equivalent to bisect_right - 1
+                import bisect
+                idx = bisect.bisect_right(bars, gy) - 1
+                
+                if 0 <= idx < len(bars) - 1:
+                    bar_start = bars[idx]
+                    bar_end = bars[idx+1]
+                    measure_height = bar_end - bar_start
+                    
+                    # Only snap if measure height is reasonable (close to avg)
+                    if 0.8 * avg_diff_px < measure_height < 1.2 * avg_diff_px:
+                        relative_y = gy - bar_start
+                        fraction = relative_y / measure_height
+                        
+                        # Snap fraction
+                        snapped_fraction = round(fraction * subdivisions) / subdivisions
+                        
+                        # Calculate new global Y
+                        new_global_y = bar_start + (snapped_fraction * measure_height)
+                        
+                        # Update note
+                        note['global_y'] = new_global_y
+                        
+                        # Update local Y (visual)
+                        # global_y = chunk_base_y + (height - center_y)
+                        # center_y = height - (global_y - chunk_base_y)
+                        note['y'] = note['chunk_height'] - (new_global_y - note['chunk_base_y'])
+                        
+                        # Update time
+                        if 'speed' in metadata and 'fps' in metadata and 'start_time' in metadata:
+                            note['time'] = metadata['start_time'] + (new_global_y / metadata['speed']) / metadata['fps']
 
     # Save results
     output_file = os.path.join(args.input, "notes.json")

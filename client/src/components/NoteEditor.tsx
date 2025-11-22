@@ -34,6 +34,14 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [playbackRate, setPlaybackRate] = useState(1.0);
+    
+    // Visual Hit Line (defaults to Scan Line)
+    const [hitLineY, setHitLineY] = useState(scanLineY);
+    
+    // Update hitLineY when scanLineY changes (initial load)
+    useEffect(() => {
+        setHitLineY(scanLineY);
+    }, [scanLineY]);
 
     // Animation Loop
     useEffect(() => {
@@ -56,12 +64,22 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
             // Clear
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            // Draw Scan Line
-            ctx.strokeStyle = 'red';
+            // Draw Scan Line (Red - Source)
+            ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
             ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
             ctx.beginPath();
             ctx.moveTo(0, scanLineY);
             ctx.lineTo(canvas.width, scanLineY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            // Draw Hit Line (Green - Target)
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(0, hitLineY);
+            ctx.lineTo(canvas.width, hitLineY);
             ctx.stroke();
 
             // Draw Track Bounds
@@ -87,26 +105,21 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                 // Draw divider
                 ctx.strokeStyle = 'rgba(255, 255, 0, 0.3)';
                 ctx.beginPath();
-                ctx.moveTo(currentX, scanLineY);
-                ctx.lineTo(currentX, canvas.height); // Draw downwards?
+                ctx.moveTo(currentX, 0); // Draw full height
+                ctx.lineTo(currentX, canvas.height); 
                 ctx.stroke();
                 
                 currentX += w;
             }
 
             // Draw Notes
-            // We want to visualize notes falling towards the scan line.
+            // We want to visualize notes falling towards the HIT line.
             // Note Time = T_hit.
             // Current Time = T_now.
             // Delta T = T_hit - T_now.
             // If Delta T > 0, note is approaching (above line).
             // If Delta T < 0, note is past (below line).
             // Distance = Delta T * Speed (pixels/sec).
-            // Speed (pixels/sec) = scrollSpeed (px/frame) * fps?
-            // We don't know FPS here easily without metadata.
-            // Let's assume 60 FPS for visualization or try to estimate.
-            // Actually, we can just use a visual speed factor.
-            // Let's say 500 pixels per second is a good visual speed.
             const VISUAL_SPEED = 500; 
 
             const timeWindow = 2.0; // Show notes within +/- 2 seconds
@@ -118,10 +131,9 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                 
                 if (Math.abs(deltaT) > timeWindow) return;
 
-                // Y position relative to scan line
-                // If deltaT > 0 (future), Y should be < scanLineY (above).
-                // Y = scanLineY - (deltaT * VISUAL_SPEED)
-                const noteY = scanLineY - (deltaT * VISUAL_SPEED);
+                // Y position relative to HIT line
+                // Y = hitLineY - (deltaT * VISUAL_SPEED)
+                const noteY = hitLineY - (deltaT * VISUAL_SPEED);
                 
                 const lane = lanePositions[note.lane];
                 if (!lane) return;
@@ -136,10 +148,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
 
                 const noteH = note.h || 20; // Use detected height or default
                 
-                // Center the note vertically on the calculated Y? 
-                // Or is Y the bottom?
-                // In detection, Y was center.
-                // Let's assume noteY is center.
+                // Center the note vertically on the calculated Y
                 ctx.fillRect(lane.x + 2, noteY - noteH/2, lane.w - 4, noteH);
             });
 
@@ -156,7 +165,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         }
 
         return () => cancelAnimationFrame(animationFrameId);
-    }, [isPlaying, currentTime, notes, scanLineY, trackX1, trackX2, laneRatios]);
+    }, [isPlaying, currentTime, notes, scanLineY, hitLineY, trackX1, trackX2, laneRatios]);
 
     const togglePlay = () => {
         if (videoRef.current) {
@@ -212,7 +221,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         const hitNoteIndex = notes.findIndex(note => {
             if (note.lane !== clickedLane || note.time === undefined) return false;
             const deltaT = note.time - videoRef.current!.currentTime;
-            const noteY = scanLineY - (deltaT * VISUAL_SPEED);
+            const noteY = hitLineY - (deltaT * VISUAL_SPEED);
             const noteH = note.h || 20;
             
             // Simple box check
@@ -227,11 +236,11 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         } else {
             // Add note
             // Calculate time from Y
-            // Y = scanLineY - (deltaT * VISUAL_SPEED)
-            // deltaT = (scanLineY - Y) / VISUAL_SPEED
+            // Y = hitLineY - (deltaT * VISUAL_SPEED)
+            // deltaT = (hitLineY - Y) / VISUAL_SPEED
             // time = currentTime + deltaT
             
-            const deltaT = (scanLineY - y) / VISUAL_SPEED;
+            const deltaT = (hitLineY - y) / VISUAL_SPEED;
             const noteTime = videoRef.current.currentTime + deltaT;
             
             const newNote: Note = {
@@ -308,6 +317,15 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                             setPlaybackRate(val);
                             if (videoRef.current) videoRef.current.playbackRate = val;
                         }}
+                    />
+                    
+                    <Text size="sm">Hit Line Y:</Text>
+                    <Slider
+                        w={100}
+                        min={0}
+                        max={canvasRef.current?.height || 1080}
+                        value={hitLineY}
+                        onChange={setHitLineY}
                     />
                 </Group>
                 <Text size="xs" c="dimmed">
