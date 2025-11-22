@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
 import { processingResultAtom, videoFilenameAtom, laneRatiosAtom } from '../store';
 import { Image, Paper, Text, Button, Group, Slider, Box, Loader, ActionIcon, Tooltip, NumberInput, Popover } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { Play, Settings } from 'lucide-react';
 import { NoteEditor } from './NoteEditor';
 
@@ -70,12 +71,25 @@ export function WaterfallViewer() {
             setNotes(data.notes.notes);
             setBpm(data.notes.bpm);
         }
+        notifications.show({
+            title: 'Detection Completed',
+            message: `Found ${Array.isArray(data.notes) ? data.notes.length : data.notes.notes.length} notes`,
+            color: 'green'
+        });
       } else {
-        alert('Detection failed: ' + JSON.stringify(data));
+        notifications.show({
+            title: 'Detection Failed',
+            message: JSON.stringify(data),
+            color: 'red'
+        });
       }
     } catch (e) {
       console.error(e);
-      alert('Error triggering detection');
+      notifications.show({
+          title: 'Error',
+          message: 'Error triggering detection',
+          color: 'red'
+      });
     } finally {
       setDetecting(false);
     }
@@ -122,13 +136,25 @@ export function WaterfallViewer() {
         });
         const data = await res.json();
         if (data.status === 'completed') {
-            alert(`MIDI Exported successfully to: ${data.path}`);
+            notifications.show({
+                title: 'Export Successful',
+                message: `MIDI Exported to: ${data.path}`,
+                color: 'green'
+            });
         } else {
-            alert('Export failed: ' + JSON.stringify(data));
+            notifications.show({
+                title: 'Export Failed',
+                message: JSON.stringify(data),
+                color: 'red'
+            });
         }
     } catch (e) {
         console.error(e);
-        alert('Error exporting MIDI');
+        notifications.show({
+            title: 'Error',
+            message: 'Error exporting MIDI',
+            color: 'red'
+        });
     } finally {
         setExporting(false);
     }
