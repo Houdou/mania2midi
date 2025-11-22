@@ -25,6 +25,7 @@ export function WaterfallViewer() {
   const [detecting, setDetecting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [threshold, setThreshold] = useState(200);
+  const [minHeight, setMinHeight] = useState(3);
   const [zoom, setZoom] = useState(50);
   const [editorOpened, setEditorOpened] = useState(false);
   const [metadata, setMetadata] = useState<any>(null);
@@ -57,7 +58,8 @@ export function WaterfallViewer() {
           threshold,
           laneRatios,
           beatsPerBar,
-          barsPerLine
+          barsPerLine,
+          minHeight
         })
       });
       const data = await res.json();
@@ -243,6 +245,15 @@ export function WaterfallViewer() {
                         onChange={(v) => setBarsPerLine(Number(v))}
                         min={1}
                         max={16}
+                        mb="xs"
+                    />
+                    <NumberInput
+                        label="Min Note Height (px)"
+                        description="Minimum height for a note to be detected"
+                        value={minHeight}
+                        onChange={(v) => setMinHeight(Number(v))}
+                        min={1}
+                        max={50}
                     />
                 </Popover.Dropdown>
             </Popover>
@@ -269,46 +280,48 @@ export function WaterfallViewer() {
           <span style={{ marginLeft: 20, color: 'gray', fontSize: '0.8em' }}>(Click chart to add/remove notes)</span>
       </Text>
       
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
-        {[...result.chunks].reverse().map((chunk) => {
-          // Extract original index from filename "chunk_N.jpg"
-          const chunkIndex = parseInt(chunk.split('_')[1]);
-          
-          return (
-            <Box 
-                key={chunk} 
-                style={{ position: 'relative', width: `${zoom}%`, cursor: 'crosshair' }}
-                onClick={(e) => handleChunkClick(e, chunkIndex)}
-            >
-                <Image
-                src={`/workspace/${result.outputDir}/${chunk}?t=${result.timestamp}`}
-                alt={chunk}
-                w="100%"
-                fit="contain"
-                style={{ display: 'block', pointerEvents: 'none' }}
-                />
-                {/* Overlay Notes for this chunk */}
-                {notes.filter(n => n.chunk_index === chunkIndex).map((note, i) => {
-                    const chunkH = note.chunk_height || 2000; // Fallback to default chunk size if missing
-                    return (
-                        <div
-                            key={i}
-                            style={{
-                                position: 'absolute',
-                                top: `${((note.y - (note.h / 2)) / chunkH) * 100}%`,
-                                left: `${getLaneLeft(note.lane)}%`,
-                                width: `${getLaneWidth(note.lane)}%`,
-                                height: `${(note.h / chunkH) * 100}%`,
-                                border: '2px solid lime',
-                                backgroundColor: 'rgba(0, 255, 0, 0.3)',
-                                pointerEvents: 'none'
-                            }}
-                        />
-                    );
-                })}
-            </Box>
-          );
-        })}
+      <div style={{ maxHeight: '70vh', overflowY: 'auto', border: '1px solid #333', borderRadius: 4, padding: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
+            {[...result.chunks].reverse().map((chunk) => {
+            // Extract original index from filename "chunk_N.jpg"
+            const chunkIndex = parseInt(chunk.split('_')[1]);
+            
+            return (
+                <Box 
+                    key={chunk} 
+                    style={{ position: 'relative', width: `${zoom}%`, cursor: 'crosshair' }}
+                    onClick={(e) => handleChunkClick(e, chunkIndex)}
+                >
+                    <Image
+                    src={`/workspace/${result.outputDir}/${chunk}?t=${result.timestamp}`}
+                    alt={chunk}
+                    w="100%"
+                    fit="contain"
+                    style={{ display: 'block', pointerEvents: 'none' }}
+                    />
+                    {/* Overlay Notes for this chunk */}
+                    {notes.filter(n => n.chunk_index === chunkIndex).map((note, i) => {
+                        const chunkH = note.chunk_height || 2000; // Fallback to default chunk size if missing
+                        return (
+                            <div
+                                key={i}
+                                style={{
+                                    position: 'absolute',
+                                    top: `${((note.y - (note.h / 2)) / chunkH) * 100}%`,
+                                    left: `${getLaneLeft(note.lane)}%`,
+                                    width: `${getLaneWidth(note.lane)}%`,
+                                    height: `${(note.h / chunkH) * 100}%`,
+                                    border: '2px solid lime',
+                                    backgroundColor: 'rgba(0, 255, 0, 0.3)',
+                                    pointerEvents: 'none'
+                                }}
+                            />
+                        );
+                    })}
+                </Box>
+            );
+            })}
+        </div>
       </div>
 
       <NoteEditor 

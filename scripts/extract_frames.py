@@ -36,7 +36,14 @@ def main():
             
         filename = f"calib_{i}.jpg"
         filepath = os.path.join(args.output, filename)
-        cv2.imwrite(filepath, frame)
+        
+        # cv2.imwrite doesn't support non-ASCII paths on Windows
+        # Use imencode + write to file
+        is_success, im_buf = cv2.imencode(".jpg", frame)
+        if is_success:
+            with open(filepath, "wb") as f:
+                im_buf.tofile(f)
+        
         extracted_files.append(filename)
         
         # Skip frames for interval

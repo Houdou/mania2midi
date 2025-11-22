@@ -97,12 +97,12 @@ export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteE
     // Animation Loop
     useEffect(() => {
         let animationFrameId: number;
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
 
         const render = () => {
-            if (!videoRef.current || !canvasRef.current) return;
+            if (!video || !canvas) return;
             
-            const video = videoRef.current;
-            const canvas = canvasRef.current;
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
 
@@ -237,19 +237,32 @@ export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteE
             });
 
             if (isPlaying) {
-                setCurrentTime(video.currentTime);
-                animationFrameId = requestAnimationFrame(render);
+                if ('requestVideoFrameCallback' in video) {
+                    animationFrameId = (video as any).requestVideoFrameCallback(render);
+                } else {
+                    animationFrameId = requestAnimationFrame(render);
+                }
             }
         };
 
         if (isPlaying) {
-            animationFrameId = requestAnimationFrame(render);
+            if (video && 'requestVideoFrameCallback' in video) {
+                animationFrameId = (video as any).requestVideoFrameCallback(render);
+            } else {
+                animationFrameId = requestAnimationFrame(render);
+            }
         } else {
             render(); // Render once when paused
         }
 
-        return () => cancelAnimationFrame(animationFrameId);
-    }, [isPlaying, currentTime, notes, scanLineY, hitLineY, trackX1, trackX2, laneRatios, visualSpeed, metadata, visualOffset]);
+        return () => {
+            if (video && 'cancelVideoFrameCallback' in video) {
+                (video as any).cancelVideoFrameCallback(animationFrameId);
+            } else {
+                cancelAnimationFrame(animationFrameId);
+            }
+        };
+    }, [isPlaying, notes, scanLineY, hitLineY, trackX1, trackX2, laneRatios, visualSpeed, metadata, visualOffset]);
 
     const togglePlay = () => {
         if (videoRef.current) {

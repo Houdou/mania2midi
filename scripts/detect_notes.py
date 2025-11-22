@@ -5,6 +5,7 @@ import os
 import json
 import glob
 import re
+import bisect
 
 def main():
     parser = argparse.ArgumentParser(description='Detect notes in Slit-Scan chunks')
@@ -14,6 +15,8 @@ def main():
     parser.add_argument('--threshold', type=int, default=200, help='Brightness threshold (0-255)')
     parser.add_argument('--beats-per-bar', type=int, default=4, help='Beats per bar (Time Signature Numerator)')
     parser.add_argument('--bars-per-line', type=int, default=1, help='Number of bars between detected lines')
+    parser.add_argument('--min-height', type=int, default=3, help='Minimum note height in pixels')
+    parser.add_argument('--merge-gap', type=int, default=5, help='Max gap to merge segments')
     
     args = parser.parse_args()
 
@@ -65,90 +68,143 @@ def main():
         chunk_idx = get_index(chunk_file)
         print(f"Processing chunk {chunk_idx}...")
         
-        img = cv2.imread(chunk_file)
+        # cv2.imread doesn't support non-ASCII paths on Windows
+        # Use fromfile + imdecode
+        try:
+            with open(chunk_file, "rb") as f:
+                file_bytes = np.frombuffer(f.read(), dtype=np.uint8)
+                img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"Error reading chunk {chunk_file}: {e}")
+            continue
+
         if img is None:
             continue
             
         height, width, _ = img.shape
-        lane_width = width / args.lanes
         
-        # Convert to grayscale for simple brightness detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Use Max-Channel brightness instead of weighted Grayscale
+        # This ensures colored notes (like pink/red) retain high brightness.
+        gray = np.max(img, axis=2)
         
-        # Threshold
-        _, thresh = cv2.threshold(gray, args.threshold, 255, cv2.THRESH_BINARY)
+        # --- Pass 1: Detect Bar Lines (Global Scanline) ---
+        # Calculate mean brightness of each row across the whole image
+        global_row_means = np.mean(gray, axis=1)
+        
+        # Bar lines are bright rows spanning most of the image
+        is_bar_row = global_row_means > args.threshold
+        
+        padded_bar_mask = np.pad(is_bar_row, (1, 1), 'constant', constant_values=False)
+        diff_bar = np.diff(padded_bar_mask.astype(int))
+        starts_bar = np.where(diff_bar == 1)[0]
+        ends_bar = np.where(diff_bar == -1)[0]
+        
+        for start, end in zip(starts_bar, ends_bar):
+            h = end - start
+            # Bar lines are thin (e.g. < 10px)
+            if h < 10:
+                # Verify fill ratio across the whole width
+                bar_rows = gray[start:end, :]
+                bright_pixels = np.sum(bar_rows > args.threshold)
+                total_pixels = bar_rows.size
+                fill_ratio = bright_pixels / total_pixels
+                
+                if fill_ratio > 0.8:
+                    center_y = start + h/2
+                    global_y = current_base_y + (height - center_y)
+                    detected_bar_lines_y.append(global_y)
 
-        # --- Pass 1: Detect Bar Lines (Global on the chunk) ---
-        # We look for lines that span most of the image width
-        contours_global, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for cnt in contours_global:
-             x, y, w, h = cv2.boundingRect(cnt)
-             # Bar line criteria: Wide (> 80% of image width) and Thin (< 10px)
-             if w > (width * 0.8) and h < 10:
-                 center_y = y + h/2
-                 # Calculate Global Y (pixels from start of video time)
-                 # Up-scroll logic: Top of chunk is LATER, Bottom is EARLIER.
-                 # But chunks are ordered 0..N (0 is start).
-                 # So Global Y = current_base_y + (height - center_y)
-                 global_y = current_base_y + (height - center_y)
-                 detected_bar_lines_y.append(global_y)
-
-        # --- Pass 2: Detect Notes (Per Lane) ---
-        # Process each lane
+        # --- Pass 2: Detect Notes (Per Lane Scanline) ---
         current_x = 0.0
         for lane_idx in range(args.lanes):
-            # Calculate lane width based on ratio
             this_lane_width_ratio = normalized_ratios[lane_idx]
             this_lane_width_px = width * this_lane_width_ratio
             
             x_start = int(current_x)
             x_end = int(current_x + this_lane_width_px)
-            
-            # Update current_x for next lane
             current_x += this_lane_width_px
             
-            # Extract lane strip from threshold image
-            lane_strip = thresh[:, x_start:x_end]
+            # Extract lane strip
+            lane_gray = gray[:, x_start:x_end]
             
-            # Find contours in this strip
-            contours, _ = cv2.findContours(lane_strip, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # --- Improved Detection Logic ---
+            # Instead of segmenting first then validating, we validate PER ROW.
+            # This allows us to "slice" the solid note bar out of a larger background icon.
             
-            for cnt in contours:
-                # Filter small noise
-                if cv2.contourArea(cnt) < 50:
-                    continue
-                    
-                # Get bounding box
-                x, y, w, h = cv2.boundingRect(cnt)
+            # 1. Brightness Check (Max Channel)
+            # Lower threshold to catch dim colored notes (purple/blue)
+            # User reported purple note missed -> likely too dim.
+            detection_thresh = max(100, args.threshold - 50) 
+            row_maxes = np.max(lane_gray, axis=1)
+            is_bright = row_maxes > detection_thresh
+            
+            # 2. Width/Fill Check
+            # The "Note" is a bar that spans the lane. Background icons are usually narrower or hollow.
+            # We calculate how many pixels in the row are "bright enough".
+            # We use a slightly lower threshold for fill calculation to include edges.
+            fill_thresh = detection_thresh * 0.8
+            row_bright_counts = np.sum(lane_gray > fill_thresh, axis=1)
+            lane_w_px = x_end - x_start
+            row_fill_ratios = row_bright_counts / lane_w_px
+            is_wide = row_fill_ratios > 0.6 # Must span 60% of lane
+            
+            # 3. Solid Color Check (Variance)
+            # The "Note" is usually a solid color. Icons have details/gradients.
+            row_stds = np.std(lane_gray, axis=1)
+            is_solid = row_stds < 80.0 # Allow some gradient but reject high noise
+            
+            # Combine checks
+            is_note_row = is_bright & is_wide & is_solid
+            
+            # 4. Segment Detection on Valid Rows
+            padded_mask = np.pad(is_note_row, (1, 1), 'constant', constant_values=False)
+            diff = np.diff(padded_mask.astype(int))
+            starts = np.where(diff == 1)[0]
+            ends = np.where(diff == -1)[0]
+            
+            # Merge close segments
+            merged_segments = []
+            if len(starts) > 0:
+                curr_start = starts[0]
+                curr_end = ends[0]
+                for i in range(1, len(starts)):
+                    if starts[i] - curr_end < args.merge_gap:
+                        curr_end = ends[i]
+                    else:
+                        merged_segments.append((curr_start, curr_end))
+                        curr_start = starts[i]
+                        curr_end = ends[i]
+                merged_segments.append((curr_start, curr_end))
+            
+            for start, end in merged_segments:
+                h = end - start
                 
-                # Filter based on dimensions (User Request: Ignore long/thin, enforce fixed style)
-                # Notes in mania are typically wide (filling the lane) and have some height.
-                # 1. Width check: Must be at least 50% of lane width
-                if w < (this_lane_width_px * 0.5):
-                    continue
-                    
-                # 2. Height check: Must be at least 3 pixels (avoid single line noise)
-                if h < 3:
-                    continue
-
-                # 3. Bar Line check: If it's very wide but short, it's likely a bar line
-                # Bar lines span the full lane (w ~ lane_width) but are thin
-                if w > (this_lane_width_px * 0.9) and h < 6:
-                    continue
+                # Filter tiny noise
+                if h < args.min_height: continue
+                
+                # Extract segment for final verification (optional, but good for debugging)
+                # segment_pixels = lane_gray[start:end, :]
                 
                 # Calculate centroid Y
-                center_y = y + h / 2
+                center_y = start + h / 2
                 
-                # Calculate Time (Seconds)
-                # Global Y = current_base_y + (height - center_y)
-                # Time = start_time + (Global Y / speed) / fps
+                # D. Bar Line Check (Local)
                 global_y = current_base_y + (height - center_y)
+                
+                # Check against detected bar lines
+                is_bar_line = False
+                for bar_y in detected_bar_lines_y:
+                    if abs(bar_y - global_y) < 5: # 5px tolerance
+                        is_bar_line = True
+                        break
+                if is_bar_line:
+                    continue
+
+                # Calculate Time
                 time_sec = 0.0
                 if 'speed' in metadata and 'fps' in metadata and 'start_time' in metadata:
                     time_sec = metadata['start_time'] + (global_y / metadata['speed']) / metadata['fps']
 
-                # Store note
-                # We store local coordinates.
                 detected_notes.append({
                     "chunk_index": chunk_idx,
                     "chunk_height": height,
@@ -158,10 +214,9 @@ def main():
                     "h": float(h),
                     "global_y": float(global_y),
                     "time": float(time_sec),
-                    "type": "hit" # Default to hit, logic for hold notes can be added later
+                    "type": "hit"
                 })
         
-        # Update base Y for next chunk
         current_base_y += height
 
     # Calculate BPM
@@ -217,7 +272,6 @@ def main():
                 # Find the measure this note belongs to
                 # We look for the last bar line <= gy
                 # This is equivalent to bisect_right - 1
-                import bisect
                 idx = bisect.bisect_right(bars, gy) - 1
                 
                 if 0 <= idx < len(bars) - 1:

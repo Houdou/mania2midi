@@ -180,7 +180,13 @@ def save_chunk(buffer, output_dir, index):
     # We will stick with the Up-scroll chart as it is the "Correct Scan" for shape.
     
     filename = os.path.join(output_dir, f"chunk_{index}.jpg")
-    cv2.imwrite(filename, waterfall_image)
+    
+    # cv2.imwrite doesn't support non-ASCII paths on Windows
+    is_success, im_buf = cv2.imencode(".jpg", waterfall_image)
+    if is_success:
+        with open(filename, "wb") as f:
+            im_buf.tofile(f)
+            
     print(f"Saved {filename} (Height: {waterfall_image.shape[0]})")
 
 if __name__ == "__main__":

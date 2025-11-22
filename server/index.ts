@@ -10,7 +10,7 @@ const PORT = 3000;
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 // Static files
 // Serve the workspace folder so the frontend can access generated images
@@ -85,7 +85,9 @@ app.post('/api/process/slit-scan', (req, res) => {
   const pythonExec = fs.existsSync(venvPython) ? venvPython : 'python';
   console.log(`Using Python executable: ${pythonExec}`);
 
-  const pythonProcess = spawn(pythonExec, args);
+  const pythonProcess = spawn(pythonExec, args, {
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+  });
 
   pythonProcess.stdout.on('data', (data) => {
     console.log(`[Python]: ${data}`);
@@ -152,7 +154,9 @@ app.post('/api/extract-frames', (req, res) => {
     '--start', (startTime || 0).toString(),
     '--count', count.toString(),
     '--interval', interval.toString()
-  ]);
+  ], {
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+  });
 
   let outputData = '';
 
@@ -191,7 +195,7 @@ app.post('/api/extract-frames', (req, res) => {
 
 // Detect notes
 app.post('/api/process/detect-notes', (req, res) => {
-  const { videoFilename, threshold = 200, laneRatios, beatsPerBar, barsPerLine } = req.body;
+  const { videoFilename, threshold = 200, laneRatios, beatsPerBar, barsPerLine, minHeight } = req.body;
 
   if (!videoFilename) {
     return res.status(400).json({ error: 'Missing videoFilename' });
@@ -224,8 +228,11 @@ app.post('/api/process/detect-notes', (req, res) => {
   
   if (beatsPerBar) args.push('--beats-per-bar', beatsPerBar.toString());
   if (barsPerLine) args.push('--bars-per-line', barsPerLine.toString());
+  if (minHeight) args.push('--min-height', minHeight.toString());
 
-  const pythonProcess = spawn(pythonExec, args);
+  const pythonProcess = spawn(pythonExec, args, {
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+  });
 
   pythonProcess.stdout.on('data', (data) => {
     console.log(`[Python Detect]: ${data}`);
