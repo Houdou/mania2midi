@@ -23,6 +23,7 @@ export function WaterfallViewer() {
   
   const [notes, setNotes] = useState<Note[]>([]);
   const [bpm, setBpm] = useState<number | null>(null);
+  const [barLines, setBarLines] = useState<number[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [threshold, setThreshold] = useState(200);
@@ -67,9 +68,11 @@ export function WaterfallViewer() {
         if (Array.isArray(data.notes)) {
             setNotes(data.notes);
             setBpm(null);
+            setBarLines([]);
         } else {
             setNotes(data.notes.notes);
             setBpm(data.notes.bpm);
+            setBarLines(data.notes.bar_lines || []);
         }
         notifications.show({
             title: 'Detection Completed',
@@ -354,6 +357,8 @@ export function WaterfallViewer() {
         notes={notes}
         setNotes={setNotes}
         metadata={metadata}
+        bpm={bpm}
+        barLines={barLines}
       />
     </Paper>
   );

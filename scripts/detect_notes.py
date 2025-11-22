@@ -219,86 +219,112 @@ def main():
         
         current_base_y += height
 
-    # Calculate BPM
+    # Calculate BPM and Generate Grid
     bpm = 0
+    final_grid = []
+    
     if len(detected_bar_lines_y) > 1:
         detected_bar_lines_y.sort()
-        diffs = np.diff(detected_bar_lines_y)
         
-        # Filter outliers (e.g. double detection or missed lines)
-        # We assume most bars are evenly spaced.
-        median_diff = np.median(diffs)
+        # 1. Filter detected lines (remove duplicates/too close)
+        # A bar line shouldn't be closer than, say, 50px to another (unless very high bpm/low speed)
+        # Let's use a dynamic threshold based on initial median
+        raw_diffs = np.diff(detected_bar_lines_y)
+        initial_median = np.median(raw_diffs)
         
-        # If we have enough data, we can be smarter.
-        # Filter diffs that are close to median (within 20%)
-        valid_diffs = [d for d in diffs if 0.8 * median_diff < d < 1.2 * median_diff]
-        
-        if valid_diffs:
-            avg_diff_px = np.mean(valid_diffs)
-            
-            # Calculate BPM
-            if 'speed' in metadata and 'fps' in metadata:
-                frames_per_line = avg_diff_px / metadata['speed']
-                seconds_per_line = frames_per_line / metadata['fps']
+        filtered_lines = [detected_bar_lines_y[0]]
+        for i in range(1, len(detected_bar_lines_y)):
+            if detected_bar_lines_y[i] - filtered_lines[-1] > 0.5 * initial_median:
+                filtered_lines.append(detected_bar_lines_y[i])
                 
-                # BPM = Beats Per Minute
-                # beats_per_line = beats_per_bar * bars_per_line
-                beats_per_line = args.beats_per_bar * args.bars_per_line
+        # 2. Calculate robust median height (pixels per line)
+        if len(filtered_lines) > 1:
+            diffs = np.diff(filtered_lines)
+            median_diff = np.median(diffs)
+            
+            # Filter diffs to get a clean average
+            valid_diffs = [d for d in diffs if 0.8 * median_diff < d < 1.2 * median_diff]
+            
+            if valid_diffs:
+                avg_diff_px = np.mean(valid_diffs)
                 
-                if seconds_per_line > 0:
-                    bpm = (60 / seconds_per_line) * beats_per_line
-                    print(f"Estimated BPM: {bpm:.2f} (Avg Line Height: {avg_diff_px:.1f}px, Beats/Line: {beats_per_line})")
-
-            # --- Quantization Step ---
-            # Snap notes to 1/48 of a measure (covers 1/4, 1/8, 1/12, 1/16, 1/24, 1/32)
-            # We only quantize if we have valid bar lines
-            print("Quantizing notes...")
-            
-            # If bars_per_line > 1, the "measure" we detected is actually multiple measures.
-            # We need to increase subdivisions to maintain resolution.
-            # Standard: 48 subdivisions per bar.
-            subdivisions = 48 * args.bars_per_line
-            
-            # We need to handle the case where bar lines might be missing or noisy.
-            # But for now, let's assume detected_bar_lines_y gives us a grid.
-            # We will only snap notes that fall within the range of detected bar lines.
-            
-            # Sort bar lines just in case
-            bars = sorted(detected_bar_lines_y)
-            
-            for note in detected_notes:
-                gy = note['global_y']
-                
-                # Find the measure this note belongs to
-                # We look for the last bar line <= gy
-                # This is equivalent to bisect_right - 1
-                idx = bisect.bisect_right(bars, gy) - 1
-                
-                if 0 <= idx < len(bars) - 1:
-                    bar_start = bars[idx]
-                    bar_end = bars[idx+1]
-                    measure_height = bar_end - bar_start
+                # Calculate BPM
+                if 'speed' in metadata and 'fps' in metadata:
+                    frames_per_line = avg_diff_px / metadata['speed']
+                    seconds_per_line = frames_per_line / metadata['fps']
+                    beats_per_line = args.beats_per_bar * args.bars_per_line
                     
-                    # Only snap if measure height is reasonable (close to avg)
-                    if 0.8 * avg_diff_px < measure_height < 1.2 * avg_diff_px:
-                        relative_y = gy - bar_start
-                        fraction = relative_y / measure_height
+                    if seconds_per_line > 0:
+                        bpm = (60 / seconds_per_line) * beats_per_line
+                        print(f"Estimated BPM: {bpm:.2f} (Avg Line Height: {avg_diff_px:.1f}px)")
+
+                # 3. Generate Standardized Grid
+                # We interpolate between filtered lines to fill gaps
+                final_grid = [filtered_lines[0]]
+                
+                for i in range(1, len(filtered_lines)):
+                    prev_line = filtered_lines[i-1]
+                    curr_line = filtered_lines[i]
+                    dist = curr_line - prev_line
+                    
+                    # How many lines fit here?
+                    num_segments = round(dist / avg_diff_px)
+                    
+                    if num_segments <= 1:
+                        final_grid.append(curr_line)
+                    else:
+                        # Interpolate
+                        step = dist / num_segments
+                        for k in range(1, num_segments):
+                            final_grid.append(prev_line + k * step)
+                        final_grid.append(curr_line)
+                
+                # 4. Extrapolate Grid (Start and End)
+                # Cover all notes
+                min_note_y = min([n['global_y'] for n in detected_notes]) if detected_notes else 0
+                max_note_y = max([n['global_y'] for n in detected_notes]) if detected_notes else 0
+                
+                # Backwards
+                while final_grid[0] > min_note_y:
+                    final_grid.insert(0, final_grid[0] - avg_diff_px)
+                    
+                # Forwards
+                while final_grid[-1] < max_note_y:
+                    final_grid.append(final_grid[-1] + avg_diff_px)
+
+                # 5. Quantize Notes
+                print("Quantizing notes to grid...")
+                
+                # Subdivisions: 48 per line (covers 1/2, 1/3, 1/4, 1/6, 1/8, 1/12, 1/16)
+                # If bars_per_line > 1, this resolution is distributed across multiple bars.
+                # e.g. if 4 bars/line, 48 divs = 12 divs/bar = triplets + quarters.
+                # Let's increase resolution to ensure we cover 1/16ths even with multiple bars.
+                # 192 = 48 * 4.
+                subdivisions = 192 
+                
+                for note in detected_notes:
+                    gy = note['global_y']
+                    
+                    # Find grid segment
+                    idx = bisect.bisect_right(final_grid, gy) - 1
+                    
+                    if 0 <= idx < len(final_grid) - 1:
+                        grid_start = final_grid[idx]
+                        grid_end = final_grid[idx+1]
+                        segment_height = grid_end - grid_start
                         
-                        # Snap fraction
+                        relative_y = gy - grid_start
+                        fraction = relative_y / segment_height
+                        
+                        # Snap
                         snapped_fraction = round(fraction * subdivisions) / subdivisions
                         
-                        # Calculate new global Y
-                        new_global_y = bar_start + (snapped_fraction * measure_height)
+                        new_global_y = grid_start + (snapped_fraction * segment_height)
                         
                         # Update note
                         note['global_y'] = new_global_y
-                        
-                        # Update local Y (visual)
-                        # global_y = chunk_base_y + (height - center_y)
-                        # center_y = height - (global_y - chunk_base_y)
                         note['y'] = note['chunk_height'] - (new_global_y - note['chunk_base_y'])
                         
-                        # Update time
                         if 'speed' in metadata and 'fps' in metadata and 'start_time' in metadata:
                             note['time'] = metadata['start_time'] + (new_global_y / metadata['speed']) / metadata['fps']
 
@@ -307,7 +333,7 @@ def main():
     output_data = {
         "notes": detected_notes,
         "bpm": round(bpm, 2),
-        "bar_lines": detected_bar_lines_y
+        "bar_lines": final_grid # Save the full generated grid
     }
     with open(output_file, 'w') as f:
         json.dump(output_data, f, indent=2)

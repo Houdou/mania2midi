@@ -7,6 +7,7 @@ import { Play, Pause, Trash, Plus } from 'lucide-react';
 
 interface Note {
   chunk_index: number;
+  chunk_height?: number;
   lane: number;
   y: number;
   h: number;
@@ -20,9 +21,11 @@ interface NoteEditorProps {
     notes: Note[];
     setNotes: (notes: Note[]) => void;
     metadata?: any;
+    bpm?: number | null;
+    barLines?: number[];
 }
 
-export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteEditorProps) {
+export function NoteEditor({ opened, onClose, notes, setNotes, metadata, bpm, barLines }: NoteEditorProps) {
     const [videoFilename] = useAtom(videoFilenameAtom);
     const [scanLineY] = useAtom(scanLineYAtom);
     const [trackX1] = useAtom(trackX1Atom);
@@ -175,6 +178,43 @@ export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteE
             currentX += w;
         }
 
+        // Draw Bar Lines (Grid)
+        // const VISUAL_SPEED = visualSpeed; // Already defined below, let's move definition up or reuse
+        const VISUAL_SPEED = visualSpeed; 
+
+        if (barLines && barLines.length > 0 && metadata && metadata.speed && metadata.fps && metadata.start_time !== undefined) {
+            ctx.strokeStyle = 'rgba(0, 255, 0, 0.3)'; // Dimmed green
+            ctx.lineWidth = 1;
+            
+            // We only want to draw lines that are visible on screen.
+            // Visible time range:
+            // Top of screen (y=0): deltaT = scanLineY / VISUAL_SPEED
+            // Bottom of screen (y=H): deltaT = (scanLineY - H) / VISUAL_SPEED
+            // time = currentTime + deltaT - offset
+            
+            // Actually, simpler: Iterate all bar lines, calculate Y, check bounds.
+            // Optimization: Binary search for start index if list is huge.
+            
+            barLines.forEach(global_y => {
+                // Convert global_y to time
+                const lineTime = metadata.start_time + (global_y / metadata.speed) / metadata.fps;
+                
+                // Apply visual offset
+                const adjustedTime = lineTime + (visualOffset / 1000);
+                const deltaT = adjustedTime - video.currentTime;
+                
+                // Y = scanLineY - (deltaT * VISUAL_SPEED)
+                const lineY = scanLineY - (deltaT * VISUAL_SPEED);
+                
+                if (lineY >= 0 && lineY <= canvas.height) {
+                    ctx.beginPath();
+                    ctx.moveTo(trackX1, lineY);
+                    ctx.lineTo(trackX2, lineY);
+                    ctx.stroke();
+                }
+            });
+        }
+
         // Draw Notes
         // We want to visualize notes falling towards the HIT line.
         // Note Time = T_hit.
@@ -183,7 +223,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteE
         // If Delta T > 0, note is approaching (above line).
         // If Delta T < 0, note is past (below line).
         // Distance = Delta T * Speed (pixels/sec).
-        const VISUAL_SPEED = visualSpeed; 
+        // const VISUAL_SPEED = visualSpeed; // Removed redeclaration 
 
         const timeWindow = 2.0; // Show notes within +/- 2 seconds
         let passedCount = 0;
@@ -385,21 +425,77 @@ export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteE
             const yBottom = y + (defaultH / 2);
 
             const deltaT_visual = (scanLineY - yBottom) / VISUAL_SPEED;
-            const noteTime = videoRef.current.currentTime + deltaT_visual - (visualOffset / 1000);
+            let noteTime = videoRef.current.currentTime + deltaT_visual - (visualOffset / 1000);
             
-            // Default height logic for new note?
-            // We don't have 'h' (pixels in waterfall) for a new note easily.
-            // We can set a default duration, e.g. 0.1s
-            // h = duration * fps * speed
-            // Let's just set a default h that results in ~20px visual height at current speed?
-            // Or just set h=20 and let the render logic handle it (fallback).
+            // Quantize if barLines are available
+            let finalNoteTime = noteTime;
+            let finalGlobalY = 0;
             
+            if (metadata && metadata.speed && metadata.fps && metadata.start_time !== undefined) {
+                // Calculate raw global_y
+                let global_y = (noteTime - metadata.start_time) * metadata.fps * metadata.speed;
+                
+                if (barLines && barLines.length > 1) {
+                    // Find grid segment
+                    // barLines is sorted
+                    // Find index where barLines[i] <= global_y
+                    let idx = -1;
+                    for (let i = 0; i < barLines.length; i++) {
+                        if (barLines[i] <= global_y) {
+                            idx = i;
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    if (idx >= 0 && idx < barLines.length - 1) {
+                        const grid_start = barLines[idx];
+                        const grid_end = barLines[idx+1];
+                        const segment_height = grid_end - grid_start;
+                        
+                        const relative_y = global_y - grid_start;
+                        const fraction = relative_y / segment_height;
+                        
+                        // Snap to 1/192
+                        const subdivisions = 192;
+                        const snapped_fraction = Math.round(fraction * subdivisions) / subdivisions;
+                        
+                        global_y = grid_start + (snapped_fraction * segment_height);
+                        
+                        // Convert back to time
+                        finalNoteTime = metadata.start_time + (global_y / metadata.speed) / metadata.fps;
+                    }
+                }
+                finalGlobalY = global_y;
+            }
+
+            // Calculate Chunk Index and Y for WaterfallViewer
+            // Assuming 2000px chunks (standard)
+            const CHUNK_HEIGHT_STD = 2000;
+            const chunk_index = Math.floor(finalGlobalY / CHUNK_HEIGHT_STD);
+            
+            // Try to find height of this chunk from existing notes to handle non-standard chunks (e.g. last one)
+            const existingNoteInChunk = notes.find(n => n.chunk_index === chunk_index);
+            const actual_chunk_height = existingNoteInChunk?.chunk_height || CHUNK_HEIGHT_STD;
+
+            // In waterfall, y=0 is top (latest), y=H is bottom (earliest).
+            // global_y increases with time (latest).
+            // global_y = base + (H - y)
+            // y = H - (global_y - base)
+            // base = chunk_index * CHUNK_HEIGHT_STD (Assuming standard slicing)
+            
+            const base_y = chunk_index * CHUNK_HEIGHT_STD;
+            const offset_in_chunk = finalGlobalY - base_y;
+            
+            const chunk_y = actual_chunk_height - offset_in_chunk;
+
             const newNote: Note = {
-                chunk_index: -1, // Dummy
+                chunk_index: chunk_index,
+                chunk_height: actual_chunk_height,
                 lane: clickedLane,
-                y: 0, // Dummy
-                h: defaultH, // Default height
-                time: noteTime,
+                y: chunk_y,
+                h: defaultH, 
+                time: finalNoteTime,
                 type: 'hit'
             };
             
