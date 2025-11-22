@@ -1,7 +1,7 @@
 import { Modal, Button, Group, Stack, Text, Slider, ActionIcon, Box } from '@mantine/core';
 import { useAtom } from 'jotai';
-import { useState, useEffect, useRef } from 'react';
-import { videoFilenameAtom, scanLineYAtom, trackX1Atom, trackX2Atom, laneRatiosAtom, scrollSpeedAtom } from '../store';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { videoFilenameAtom, scanLineYAtom, trackX1Atom, trackX2Atom, laneRatiosAtom, scrollSpeedAtom, hitLineYAtom, visualOffsetAtom } from '../store';
 import { Play, Pause, Trash, Plus } from 'lucide-react';
 
 interface Note {
@@ -18,30 +18,81 @@ interface NoteEditorProps {
     onClose: () => void;
     notes: Note[];
     setNotes: (notes: Note[]) => void;
+    metadata?: any;
 }
 
-export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps) {
+export function NoteEditor({ opened, onClose, notes, setNotes, metadata }: NoteEditorProps) {
     const [videoFilename] = useAtom(videoFilenameAtom);
     const [scanLineY] = useAtom(scanLineYAtom);
     const [trackX1] = useAtom(trackX1Atom);
     const [trackX2] = useAtom(trackX2Atom);
     const [laneRatios] = useAtom(laneRatiosAtom);
-    const [scrollSpeed] = useAtom(scrollSpeedAtom); // pixels per frame
+    const [configScrollSpeed] = useAtom(scrollSpeedAtom); // px/frame
+    const [hitLineY] = useAtom(hitLineYAtom);
+    const [visualOffset, setVisualOffset] = useAtom(visualOffsetAtom);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const containerRef = useRef<HTMLDivElement>(null);
+    
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
     const [playbackRate, setPlaybackRate] = useState(1.0);
+    const [videoRect, setVideoRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
     
-    // Visual Hit Line (defaults to Scan Line)
-    const [hitLineY, setHitLineY] = useState(scanLineY);
-    
-    // Update hitLineY when scanLineY changes (initial load)
+    // Calculate visual speed (px/sec) for preview
+    const visualSpeed = useMemo(() => {
+        if (metadata && metadata.speed && metadata.fps) {
+            return metadata.speed * metadata.fps;
+        }
+        // Fallback: assume 60fps if unknown
+        return configScrollSpeed * 60;
+    }, [metadata, configScrollSpeed]);
+
+    const updateLayout = () => {
+        if (!containerRef.current || !videoRef.current) return;
+        const container = containerRef.current;
+        const video = videoRef.current;
+        
+        const cw = container.clientWidth;
+        const ch = container.clientHeight;
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        
+        if (!vw || !vh) return;
+        
+        const va = vw / vh;
+        const ca = cw / ch;
+        
+        let targetW, targetH, targetL, targetT;
+        
+        if (ca > va) {
+            // Container is wider (Pillarbox)
+            targetH = ch;
+            targetW = ch * va;
+            targetL = (cw - targetW) / 2;
+            targetT = 0;
+        } else {
+            // Container is taller (Letterbox)
+            targetW = cw;
+            targetH = cw / va;
+            targetL = 0;
+            targetT = (ch - targetH) / 2;
+        }
+        
+        setVideoRect({ left: targetL, top: targetT, width: targetW, height: targetH });
+    };
+
     useEffect(() => {
-        setHitLineY(scanLineY);
-    }, [scanLineY]);
+        const observer = new ResizeObserver(updateLayout);
+        if (containerRef.current) observer.observe(containerRef.current);
+        window.addEventListener('resize', updateLayout);
+        return () => {
+            observer.disconnect();
+            window.removeEventListener('resize', updateLayout);
+        };
+    }, []);
 
     // Animation Loop
     useEffect(() => {
@@ -55,10 +106,11 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
 
-            // Sync canvas size
+            // Sync canvas size to internal video resolution
             if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
+                updateLayout(); // Ensure layout is updated when video loads
             }
 
             // Clear
@@ -72,6 +124,9 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
             ctx.moveTo(0, scanLineY);
             ctx.lineTo(canvas.width, scanLineY);
             ctx.stroke();
+            ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+            ctx.font = '10px Arial';
+            ctx.fillText('SCAN', 5, scanLineY - 5);
             ctx.setLineDash([]);
 
             // Draw Hit Line (Green - Target)
@@ -81,6 +136,9 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
             ctx.moveTo(0, hitLineY);
             ctx.lineTo(canvas.width, hitLineY);
             ctx.stroke();
+            ctx.fillStyle = '#00ff00';
+            ctx.font = '10px Arial';
+            ctx.fillText('HIT', 5, hitLineY - 5);
 
             // Draw Track Bounds
             ctx.strokeStyle = 'cyan';
@@ -120,20 +178,23 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
             // If Delta T > 0, note is approaching (above line).
             // If Delta T < 0, note is past (below line).
             // Distance = Delta T * Speed (pixels/sec).
-            const VISUAL_SPEED = 500; 
+            const VISUAL_SPEED = visualSpeed; 
 
             const timeWindow = 2.0; // Show notes within +/- 2 seconds
 
             notes.forEach(note => {
                 if (note.time === undefined) return;
                 
-                const deltaT = note.time - video.currentTime;
+                // Apply visual offset (ms -> s)
+                const adjustedTime = note.time + (visualOffset / 1000);
+                const deltaT = adjustedTime - video.currentTime;
                 
                 if (Math.abs(deltaT) > timeWindow) return;
 
-                // Y position relative to HIT line
-                // Y = hitLineY - (deltaT * VISUAL_SPEED)
-                const noteY = hitLineY - (deltaT * VISUAL_SPEED);
+                // Y position relative to SCAN line (where detection happened)
+                // Y = scanLineY - (deltaT * VISUAL_SPEED)
+                // This ensures the note overlay matches the video content at the scan line.
+                const noteY = scanLineY - (deltaT * VISUAL_SPEED);
                 
                 const lane = lanePositions[note.lane];
                 if (!lane) return;
@@ -141,15 +202,38 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                 // Draw Note Rect
                 ctx.fillStyle = deltaT > 0 ? 'rgba(0, 255, 0, 0.8)' : 'rgba(0, 255, 0, 0.4)'; // Dim if past
                 
-                // Highlight if very close to hit (within 50ms)
-                if (Math.abs(deltaT) < 0.05) {
+                // Highlight if crossing the HIT line (visual guide)
+                // Time to hit line = (hitLineY - scanLineY) / VISUAL_SPEED
+                // We can check if noteY is close to hitLineY
+                if (Math.abs(noteY - hitLineY) < 10) {
                     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
                 }
 
-                const noteH = note.h || 20; // Use detected height or default
+                // Calculate visual height based on duration
+                let noteH = 20;
+                if (metadata && metadata.speed && metadata.fps && note.h) {
+                    const duration = (note.h / metadata.speed) / metadata.fps;
+                    noteH = duration * VISUAL_SPEED;
+                } else if (note.h) {
+                    // Fallback if metadata missing, just scale it arbitrarily or use raw
+                    // If we assume note.h was at 1x speed, and we are at scrollSpeed...
+                    // Let's just use note.h if we can't calc duration
+                    noteH = note.h;
+                }
                 
-                // Center the note vertically on the calculated Y
-                ctx.fillRect(lane.x + 2, noteY - noteH/2, lane.w - 4, noteH);
+                // Center the note vertically on the calculated Y?
+                // No, note.time usually refers to the START (Hit) of the note (bottom edge).
+                // If it's a falling note, the "Hit" time is when the bottom reaches the line.
+                // So Y is the bottom edge.
+                // The top edge is Y - H.
+                // Wait, in slit scan, y is the center? Or top?
+                // In slit scan, y is the pixel row.
+                // Usually we treat the timestamp as the "Hit" moment.
+                // For a falling note, the "Hit" is the leading edge (bottom).
+                // So we should draw the rect ABOVE noteY.
+                // Rect: [x, noteY - noteH, w, noteH]
+                
+                ctx.fillRect(lane.x + 2, noteY - noteH, lane.w - 4, noteH);
             });
 
             if (isPlaying) {
@@ -165,7 +249,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         }
 
         return () => cancelAnimationFrame(animationFrameId);
-    }, [isPlaying, currentTime, notes, scanLineY, hitLineY, trackX1, trackX2, laneRatios]);
+    }, [isPlaying, currentTime, notes, scanLineY, hitLineY, trackX1, trackX2, laneRatios, visualSpeed, metadata, visualOffset]);
 
     const togglePlay = () => {
         if (videoRef.current) {
@@ -199,7 +283,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         // We need to re-calculate note positions to hit-test
         // This duplicates render logic, ideally refactor.
         
-        const VISUAL_SPEED = 500;
+        const VISUAL_SPEED = visualSpeed;
         const trackWidth = trackX2 - trackX1;
         const totalRatio = laneRatios.reduce((a, b) => a + b, 0);
         
@@ -221,11 +305,19 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         const hitNoteIndex = notes.findIndex(note => {
             if (note.lane !== clickedLane || note.time === undefined) return false;
             const deltaT = note.time - videoRef.current!.currentTime;
-            const noteY = hitLineY - (deltaT * VISUAL_SPEED);
-            const noteH = note.h || 20;
+            const noteY = scanLineY - (deltaT * VISUAL_SPEED);
             
-            // Simple box check
-            return Math.abs(y - noteY) < (noteH / 2 + 5); // +5 padding
+            let noteH = 20;
+            if (metadata && metadata.speed && metadata.fps && note.h) {
+                const duration = (note.h / metadata.speed) / metadata.fps;
+                noteH = duration * VISUAL_SPEED;
+            } else if (note.h) {
+                noteH = note.h;
+            }
+            
+            // Box check: Rect is [lane.x, noteY - noteH, lane.w, noteH]
+            // Check Y with padding
+            return y >= (noteY - noteH - 5) && y <= (noteY + 5);
         });
 
         if (hitNoteIndex !== -1) {
@@ -236,12 +328,19 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
         } else {
             // Add note
             // Calculate time from Y
-            // Y = hitLineY - (deltaT * VISUAL_SPEED)
-            // deltaT = (hitLineY - Y) / VISUAL_SPEED
+            // Y = scanLineY - (deltaT * VISUAL_SPEED)
+            // deltaT = (scanLineY - Y) / VISUAL_SPEED
             // time = currentTime + deltaT
             
-            const deltaT = (hitLineY - y) / VISUAL_SPEED;
+            const deltaT = (scanLineY - y) / VISUAL_SPEED;
             const noteTime = videoRef.current.currentTime + deltaT;
+            
+            // Default height logic for new note?
+            // We don't have 'h' (pixels in waterfall) for a new note easily.
+            // We can set a default duration, e.g. 0.1s
+            // h = duration * fps * speed
+            // Let's just set a default h that results in ~20px visual height at current speed?
+            // Or just set h=20 and let the render logic handle it (fallback).
             
             const newNote: Note = {
                 chunk_index: -1, // Dummy
@@ -261,7 +360,7 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
     return (
         <Modal opened={opened} onClose={onClose} title="Preview & Edit" size="100%" fullScreen>
             <Stack h="90vh">
-                <div style={{ position: 'relative', flex: 1, backgroundColor: '#000', overflow: 'hidden' }}>
+                <div ref={containerRef} style={{ position: 'relative', flex: 1, backgroundColor: '#000', overflow: 'hidden' }}>
                     <video
                         ref={videoRef}
                         src={`/workspace/${videoFilename}`}
@@ -271,7 +370,10 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                             objectFit: 'contain', 
                             opacity: 0.5 // Dimmed background
                         }}
-                        onLoadedMetadata={() => setDuration(videoRef.current?.duration || 0)}
+                        onLoadedMetadata={() => {
+                            setDuration(videoRef.current?.duration || 0);
+                            updateLayout();
+                        }}
                         onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime || 0)}
                         onEnded={() => setIsPlaying(false)}
                     />
@@ -279,10 +381,10 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                         ref={canvasRef}
                         style={{
                             position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            width: '100%',
-                            height: '100%',
+                            left: videoRect.left,
+                            top: videoRect.top,
+                            width: videoRect.width,
+                            height: videoRect.height,
                             cursor: 'pointer'
                         }}
                         onClick={handleCanvasClick}
@@ -318,14 +420,15 @@ export function NoteEditor({ opened, onClose, notes, setNotes }: NoteEditorProps
                             if (videoRef.current) videoRef.current.playbackRate = val;
                         }}
                     />
-                    
-                    <Text size="sm">Hit Line Y:</Text>
+
+                    <Text size="sm">Offset (ms):</Text>
                     <Slider
                         w={100}
-                        min={0}
-                        max={canvasRef.current?.height || 1080}
-                        value={hitLineY}
-                        onChange={setHitLineY}
+                        min={-200}
+                        max={200}
+                        step={1}
+                        value={visualOffset}
+                        onChange={setVisualOffset}
                     />
                 </Group>
                 <Text size="xs" c="dimmed">

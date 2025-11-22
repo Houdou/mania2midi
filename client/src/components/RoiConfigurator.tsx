@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { Box, Button, Group, Paper, Text, Stack, Loader, RangeSlider, Slider, ActionIcon, Tooltip, Select, TextInput } from '@mantine/core';
 import { Play, Pause, Flag, Settings } from 'lucide-react';
 import { useAtom } from 'jotai';
-import { videoFilenameAtom, scanLineYAtom, trackX1Atom, trackX2Atom, isProcessingAtom, processingResultAtom, videoStartTimeAtom, videoEndTimeAtom, scrollSpeedAtom, laneRatiosAtom, lanePresetsAtom } from '../store';
+import { videoFilenameAtom, scanLineYAtom, trackX1Atom, trackX2Atom, isProcessingAtom, processingResultAtom, videoStartTimeAtom, videoEndTimeAtom, scrollSpeedAtom, laneRatiosAtom, lanePresetsAtom, hitLineYAtom } from '../store';
 import { SpeedCalibrator } from './SpeedCalibrator';
 import { LaneConfigurator } from './LaneConfigurator';
 
 export function RoiConfigurator() {
   const [videoFilename] = useAtom(videoFilenameAtom);
   const [scanLineY, setScanLineY] = useAtom(scanLineYAtom);
+  const [hitLineY, setHitLineY] = useAtom(hitLineYAtom);
   const [trackX1, setTrackX1] = useAtom(trackX1Atom);
   const [trackX2, setTrackX2] = useAtom(trackX2Atom);
   const [startTime, setStartTime] = useAtom(videoStartTimeAtom);
@@ -100,9 +101,9 @@ export function RoiConfigurator() {
   };
 
   // Mouse interaction for dragging lines
-  const [dragging, setDragging] = useState<'y' | 'x1' | 'x2' | null>(null);
+  const [dragging, setDragging] = useState<'y' | 'hitY' | 'x1' | 'x2' | null>(null);
 
-  const handleMouseDown = (type: 'y' | 'x1' | 'x2') => (e: React.MouseEvent) => {
+  const handleMouseDown = (type: 'y' | 'hitY' | 'x1' | 'x2') => (e: React.MouseEvent) => {
     e.preventDefault();
     setDragging(type);
   };
@@ -120,6 +121,7 @@ export function RoiConfigurator() {
     if (!dragging) return;
 
     if (dragging === 'y') setScanLineY(Math.max(0, Math.min(videoSize.height, videoY)));
+    if (dragging === 'hitY') setHitLineY(Math.max(0, Math.min(videoSize.height, videoY)));
     if (dragging === 'x1') setTrackX1(Math.max(0, Math.min(trackX2 - 10, Math.floor(x * scaleX))));
     if (dragging === 'x2') setTrackX2(Math.max(trackX1 + 10, Math.min(videoSize.width, Math.floor(x * scaleX))));
   };
@@ -168,7 +170,7 @@ export function RoiConfigurator() {
       });
       const data = await res.json();
       if (data.status === 'completed') {
-        setProcessingResult(data);
+        setProcessingResult({ ...data, timestamp: Date.now() });
       } else {
         alert('Processing failed: ' + JSON.stringify(data));
       }
@@ -187,11 +189,11 @@ export function RoiConfigurator() {
       <Paper p="md" withBorder>
         <Group justify="space-between" mb="xs">
             <Text fw={700}>ROI Configuration</Text>
-            <Button variant="outline" size="xs" onClick={() => setCalibrationOpened(true)}>Calibrate Speed</Button>
         </Group>
 
         <Text size="sm" mb="md">
         Drag the <span style={{ color: 'red' }}>Red Line</span> to set the Scan Line (Y).<br/>
+        Drag the <span style={{ color: '#00ff00' }}>Green Line</span> to set the Hit Line (Y).<br/>
         Drag the <span style={{ color: 'cyan' }}>Blue Lines</span> to set the Track Bounds (X1, X2).
         </Text>
         
@@ -227,6 +229,21 @@ export function RoiConfigurator() {
                   zIndex: 10,
                 }}
                 onMouseDown={handleMouseDown('y')}
+              />
+
+              {/* Hit Line Y */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: `${(hitLineY / videoSize.height) * 100}%`,
+                  left: 0,
+                  right: 0,
+                  height: 2,
+                  backgroundColor: '#00ff00',
+                  cursor: 'ns-resize',
+                  zIndex: 10,
+                }}
+                onMouseDown={handleMouseDown('hitY')}
               />
               
               {/* Track X1 */}
@@ -317,7 +334,8 @@ export function RoiConfigurator() {
         </Group>
 
         <Group mt="md">
-          <Text size="xs">Y: {scanLineY}</Text>
+          <Text size="xs">Scan Y: {scanLineY}</Text>
+          <Text size="xs">Hit Y: {hitLineY}</Text>
           <Text size="xs">X1: {trackX1}</Text>
           <Text size="xs">X2: {trackX2}</Text>
         </Group>
@@ -368,7 +386,10 @@ export function RoiConfigurator() {
         </Box>
 
         <Box mt="md">
-          <Text size="sm" mb="xs">Scroll Speed (px/frame) - Adjust to match note speed</Text>
+          <Group justify="space-between" mb="xs">
+              <Text size="sm">Scroll Speed (px/frame) - Adjust to match note speed</Text>
+              <Button variant="outline" size="xs" onClick={() => setCalibrationOpened(true)}>Calibrate Speed</Button>
+          </Group>
           <Slider
             min={1}
             max={50}

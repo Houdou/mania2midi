@@ -26,7 +26,20 @@ app.get('/api/videos', async (req, res) => {
   const workspaceDir = path.join(__dirname, '../workspace');
   try {
     const files = await fs.readdir(workspaceDir);
-    const videos = files.filter(f => f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.avi'));
+    const videos = [];
+    for (const file of files) {
+        const lower = file.toLowerCase();
+        if (lower.endsWith('.mp4') || lower.endsWith('.mkv') || lower.endsWith('.avi') || lower.endsWith('.mov') || lower.endsWith('.webm')) {
+            try {
+                const stat = await fs.stat(path.join(workspaceDir, file));
+                if (stat.isFile()) {
+                    videos.push(file);
+                }
+            } catch (e) {
+                // Ignore files we can't stat
+            }
+        }
+    }
     res.json(videos);
   } catch (err) {
     res.status(500).json({ error: 'Failed to read workspace' });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
 import { processingResultAtom, videoFilenameAtom, laneRatiosAtom } from '../store';
 import { Image, Paper, Text, Button, Group, Slider, Box, Loader, ActionIcon, Tooltip, NumberInput, Popover } from '@mantine/core';
@@ -27,10 +27,20 @@ export function WaterfallViewer() {
   const [threshold, setThreshold] = useState(200);
   const [zoom, setZoom] = useState(50);
   const [editorOpened, setEditorOpened] = useState(false);
+  const [metadata, setMetadata] = useState<any>(null);
+
+  useEffect(() => {
+      if (result && result.outputDir) {
+          fetch(`/workspace/${result.outputDir}/metadata.json`)
+              .then(res => res.json())
+              .then(data => setMetadata(data))
+              .catch(err => console.error("Failed to load metadata", err));
+      }
+  }, [result]);
   
   // BPM Config
   const [beatsPerBar, setBeatsPerBar] = useState(4);
-  const [barsPerLine, setBarsPerLine] = useState(1);
+  const [barsPerLine, setBarsPerLine] = useState(4);
 
   if (!result) return null;
 
@@ -255,7 +265,7 @@ export function WaterfallViewer() {
       
       <Text size="sm" mb="md">
           Chunks: {result.chunks.length} | Notes: {notes.length} 
-          {bpm && <span style={{ marginLeft: 20, fontWeight: 'bold', color: 'cyan' }}>Detected BPM: {bpm}</span>}
+          {bpm !== null && <span style={{ marginLeft: 20, fontWeight: 'bold', color: 'cyan' }}>Detected BPM: {bpm}</span>}
           <span style={{ marginLeft: 20, color: 'gray', fontSize: '0.8em' }}>(Click chart to add/remove notes)</span>
       </Text>
       
@@ -271,7 +281,7 @@ export function WaterfallViewer() {
                 onClick={(e) => handleChunkClick(e, chunkIndex)}
             >
                 <Image
-                src={`/workspace/${result.outputDir}/${chunk}`}
+                src={`/workspace/${result.outputDir}/${chunk}?t=${result.timestamp}`}
                 alt={chunk}
                 w="100%"
                 fit="contain"
@@ -306,6 +316,7 @@ export function WaterfallViewer() {
         onClose={() => setEditorOpened(false)} 
         notes={notes}
         setNotes={setNotes}
+        metadata={metadata}
       />
     </Paper>
   );
