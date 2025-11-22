@@ -1,0 +1,11 @@
+{
+    "watch": [
+        "server"
+    ],
+    "ext": "ts,json",
+    "ignore": [
+        "workspace/*",
+        "client/*"
+    ],
+    "exec": "ts-node server/index.ts"
+}
