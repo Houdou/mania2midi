@@ -396,7 +396,10 @@ app.post('/api/process/export-midi', (req, res) => {
         
         const write = new MidiWriter.Writer(track);
         const midiData = write.buildFile();
-        const midiPath = path.join(outputDir, 'output.mid');
+        // Use video name for the midi file
+        const midiName = path.parse(videoFilename).name + '.mid';
+        // Save to workspace root, same level as video
+        const midiPath = path.join(workspaceDir, midiName);
         
         fs.writeFileSync(midiPath, midiData);
         
