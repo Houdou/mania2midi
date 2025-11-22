@@ -240,7 +240,7 @@ app.post('/api/process/detect-notes', (req, res) => {
 
 // Export MIDI
 app.post('/api/process/export-midi', (req, res) => {
-    const { videoFilename } = req.body;
+    const { videoFilename, laneMapping } = req.body;
 
     if (!videoFilename) {
         return res.status(400).json({ error: 'Missing videoFilename' });
@@ -267,13 +267,40 @@ app.post('/api/process/export-midi', (req, res) => {
         
         // Create MIDI track
         const track = new MidiWriter.Track();
-        track.addEvent(new MidiWriter.ProgramChangeEvent({ instrument: 1 })); // Acoustic Grand Piano
         
         // Set Tempo
         track.setTempo(detectedBpm, 0);
+        
+        // Set Instrument to Standard Kit (0) on Channel 10
+        track.addEvent(new MidiWriter.ProgramChangeEvent({ instrument: 0, channel: 10 } as any));
+
         const ticksPerBeat = 128; // Default in MidiWriter is 128
         const ticksPerSecond = (ticksPerBeat * detectedBpm) / 60; 
         
+        // Default Mapping (General MIDI Drum Map)
+        // 0: Left Cymbal -> 49 (Crash 1)
+        // 1: Hi-hat -> 42 (Closed Hi-Hat)
+        // 2: Hi-hat pedal -> 44 (Pedal Hi-Hat)
+        // 3: Snare -> 38 (Acoustic Snare)
+        // 4: Tom 1 -> 50 (High Tom)
+        // 5: Bass Kick -> 36 (Bass Drum 1)
+        // 6: Tom 2 -> 47 (Low-Mid Tom)
+        // 7: Tom 3 -> 45 (Low Tom)
+        // 8: Crash (Ride) -> 51 (Ride 1)
+        const defaultMapping: Record<number, number> = {
+            0: 49,
+            1: 42,
+            2: 44,
+            3: 38,
+            4: 50,
+            5: 36,
+            6: 47,
+            7: 45,
+            8: 51
+        };
+        
+        const mapping = laneMapping || defaultMapping;
+
         // Calculate absolute time for each note and convert to MIDI events
         // We need to sort notes by time to calculate delta times (waits)
         
@@ -294,36 +321,57 @@ app.post('/api/process/export-midi', (req, res) => {
             const totalFrame = baseFrame + frameOffset;
             const timeSeconds = (totalFrame / fps) + start_time;
             
+            // Calculate duration in ticks
+            // Minimum duration: 1/32 note (128 / 8 = 16 ticks)
+            const minDurationTicks = 16;
+            let durationTicks = minDurationTicks;
+            
+            if (note.h) {
+                const durationSeconds = (note.h / speed) / fps;
+                durationTicks = Math.max(minDurationTicks, Math.round(durationSeconds * ticksPerSecond));
+            }
+
             return {
                 ...note,
                 time: timeSeconds,
-                tick: Math.round(timeSeconds * ticksPerSecond)
+                tick: Math.round(timeSeconds * ticksPerSecond),
+                durationTicks
             };
         });
         
-        // Sort by time
-        notesWithTime.sort((a: any, b: any) => a.time - b.time);
-        
-        // Generate MIDI events
-        // MidiWriter uses 'wait' (delta ticks) from previous event.
+        // Generate MIDI events using NoteOn/NoteOff to handle simultaneous notes correctly
+        const events: any[] = [];
+        notesWithTime.forEach((n: any) => {
+            const pitch = mapping[n.lane] || (36 + n.lane); // Fallback to chromatic if not mapped
+            // Channel 10 for drums
+            events.push({ type: 'on', tick: n.tick, pitch: pitch, channel: 10 });
+            events.push({ type: 'off', tick: n.tick + n.durationTicks, pitch: pitch, channel: 10 });
+        });
+
+        // Sort events
+        events.sort((a, b) => {
+            if (a.tick !== b.tick) return a.tick - b.tick;
+            // If ticks are same, process OFF before ON for same pitch (retrigger)
+            // But for different pitches, order doesn't matter much.
+            // Let's do OFF before ON generally.
+            if (a.type === 'off' && b.type === 'on') return -1;
+            if (a.type === 'on' && b.type === 'off') return 1;
+            return 0;
+        });
+
         let lastTick = 0;
-        
-        notesWithTime.forEach((note: any) => {
-            const deltaTicks = Math.max(0, note.tick - lastTick);
+        events.forEach(e => {
+            const delta = Math.max(0, e.tick - lastTick);
+            const wait = `T${delta}`;
             
-            // Map lane to pitch
-            // Lane 0 -> 36 (C2), Lane 1 -> 37 ...
-            const pitch = 36 + note.lane;
+            if (e.type === 'on') {
+                track.addEvent(new (MidiWriter as any).NoteOnEvent({ pitch: e.pitch, velocity: 100, wait: wait, channel: e.channel }));
+            } else {
+                // NoteOffEvent uses 'duration' property for the delta time (wait)
+                track.addEvent(new (MidiWriter as any).NoteOffEvent({ pitch: e.pitch, velocity: 100, duration: wait, channel: e.channel }));
+            }
             
-            const noteEvent = new MidiWriter.NoteEvent({
-                pitch: [pitch],
-                duration: '16', // Short duration
-                wait: `T${deltaTicks}`,
-                velocity: 100
-            });
-            
-            track.addEvent(noteEvent);
-            lastTick = note.tick;
+            lastTick = e.tick;
         });
         
         const write = new MidiWriter.Writer(track);
