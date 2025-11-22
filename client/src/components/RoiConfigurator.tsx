@@ -182,6 +182,15 @@ export function RoiConfigurator() {
     }
   };
 
+  const handleReset = () => {
+    if (videoSize.width > 0 && videoSize.height > 0) {
+        setTrackX1(Math.floor(videoSize.width / 3));
+        setTrackX2(Math.floor((videoSize.width / 3) * 2));
+        setScanLineY(Math.floor(videoSize.height / 8));
+        setHitLineY(Math.floor(videoSize.height - (videoSize.height / 8)));
+    }
+  };
+
   if (!videoFilename) return <Text>Please select a video first.</Text>;
 
   return (
@@ -189,6 +198,9 @@ export function RoiConfigurator() {
       <Paper p="md" withBorder>
         <Group justify="space-between" mb="xs">
             <Text fw={700}>ROI Configuration</Text>
+            <Button variant="subtle" size="xs" onClick={handleReset} disabled={videoSize.width === 0}>
+                Reset Defaults
+            </Button>
         </Group>
 
         <Text size="sm" mb="md">
